@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>meghana — playground</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0F1E2D; font-family: 'DM Mono', monospace; cursor: none; }
+  #glcanvas { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 0; }
+  
+  /* The Hidden Input */
+  #wordsInput {
+    position: fixed; top: -100px; left: -100px; opacity: 0;
+  }
+
+  /* Minimal UI */
+  nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; display: flex; justify-content: space-between; padding: 1.5rem 2.5rem; pointer-events: none; }
+  .nav-logo, .nav-links a { font-size: 0.75rem; color: rgba(255,255,255,0.5); text-decoration: none; pointer-events: all; }
+  
+  .prompt {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: rgba(255,255,255,0.2); letter-spacing: 0.2em; font-size: 0.7rem; pointer-events: none;
+    transition: opacity 0.5s;
+  }
+  #cursor { position: fixed; width: 12px; height: 12px; border: 1px solid rgba(255,255,255,0.5); border-radius: 50%; pointer-events: none; z-index: 999; transform: translate(-50%,-50%); }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-logo">meg.</div>
+  <div class="nav-links"><a href="#">work</a> &nbsp; <a href="#">about</a></div>
+</nav>
+
+<div id="cursor"></div>
+<div class="prompt" id="prompt">CLICK & TYPE TO SUMMON RAIN</div>
+<input id="wordsInput" type="text" autofocus />
+<canvas id="glcanvas"></canvas>
+
+<script>
+/** 1. AUDIO ENGINE (MEGH MALHAR) **/
+let audioCtx, analyser;
+const MEGH_SCALE = [130.81, 146.83, 174.61, 196.00, 233.08, 261.63, 293.66, 349.23, 392.00, 466.16];
+
+function playNote(char) {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!analyser) {
+        analyser = audioCtx.createAnalyser();
+        analyser.connect(audioCtx.destination);
+    }
+    const idx = char.toLowerCase().charCodeAt(0) % MEGH_SCALE.length;
+    const freq = MEGH_SCALE[idx];
+    
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.5);
+    osc.connect(gain); gain.connect(analyser);
+    osc.start(); osc.stop(audioCtx.currentTime + 1.5);
+}
+
+/** 2. TEXT CANVAS (PRETEXT-STYLE TEXTURE) **/
+const textCanvas = document.createElement('canvas');
+const tctx = textCanvas.getContext('2d');
+function updateText(text) {
+    textCanvas.width = 1024; textCanvas.height = 1024;
+    tctx.clearRect(0,0,1024,1024);
+    tctx.fillStyle = "white";
+    tctx.font = "80px 'DM Mono'";
+    tctx.textAlign = "center";
+    tctx.fillText(text, 512, 512);
+}
+
+/** 3. WEBGL SHADER (ATMOSPHERIC CLOUDS) **/
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl');
+
+const vs = `attribute vec2 p; void main(){ gl_Position=vec4(p,0,1); }`;
+const fs = `
+precision highp float;
+uniform vec2 res; uniform float time; uniform sampler2D tText; uniform vec2 mouse;
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+float noise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f*f*(3.0-2.0*f);
+    return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y);
+}
+float fbm(vec2 p) {
+    float v = 0.0, a = 0.5;
+    for(int i=0; i<5; i++) { v += a * noise(p); p *= 2.0; a *= 0.5; }
+    return v;
+}
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / res;
+    float text = texture2D(tText, uv).r; // The words
+    
+    // Atmospheric colors
+    vec3 sky = mix(vec3(0.05, 0.1, 0.2), vec3(0.2, 0.4, 0.6), uv.y);
+    
+    // Cloud layers
+    float n = fbm(uv * 3.0 + time * 0.1 + mouse * 0.2);
+    float cloud = smoothstep(0.4, 0.8, n);
+    
+    // PART THE CLOUDS: Subtract cloud density where text exists
+    cloud = clamp(cloud - text * 0.8, 0.0, 1.0);
+    
+    // TEXT GLOW: Reveal "Silver Lining" through the text holes
+    vec3 silverLining = vec3(0.9, 0.95, 1.0);
+    vec3 col = mix(sky, vec3(1.0), cloud * 0.4);
+    col = mix(col, silverLining, text); // Make the text glow
+    
+    gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// Setup WebGL Program
+function createShader(gl, type, source) {
+    const s = gl.createShader(type); gl.shaderSource(s, source); gl.compileShader(s); return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, createShader(gl, gl.VERTEX_SHADER, vs));
+gl.attachShader(prog, createShader(gl, gl.FRAGMENT_SHADER, fs));
+gl.linkProgram(prog); gl.useProgram(prog);
+
+const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const pLoc = gl.getAttribLocation(prog, 'p');
+gl.enableVertexAttribArray(pLoc); gl.vertexAttribPointer(pLoc, 2, gl.FLOAT, false, 0, 0);
+
+const tTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tTex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+
+/** 4. INTERACTION LOGIC **/
+const input = document.getElementById('wordsInput');
+const prompt = document.getElementById('prompt');
+const cursor = document.getElementById('cursor');
+
+window.addEventListener('mousedown', () => input.focus());
+document.addEventListener('mousemove', (e) => {
+    cursor.style.left = e.clientX + 'px'; cursor.style.top = e.clientY + 'px';
+});
+
+input.addEventListener('input', (e) => {
+    prompt.style.opacity = 0;
+    updateText(e.target.value);
+    playNote(e.target.value.slice(-1));
+    // Upload text to GPU
+    gl.bindTexture(gl.TEXTURE_2D, tTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, textCanvas);
+});
+
+function render(t) {
+    gl.viewport(0, 0, canvas.width = window.innerWidth, canvas.height = window.innerHeight);
+    gl.uniform2f(gl.getUniformLocation(prog, 'res'), canvas.width, canvas.height);
+    gl.uniform1f(gl.getUniformLocation(prog, 'time'), t * 0.001);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+updateText(""); // Initial empty texture
+</script>
+</body>
+</html>
